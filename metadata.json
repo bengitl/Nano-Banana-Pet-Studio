@@ -1,0 +1,7 @@
+{
+  "description": "Give your pet a fun AI makeover! Try on virtual outfits, hairstyles, and accessories with Nano Banana Pet Studio. Create hilarious and cute photos for free. Powered by Gemini.",
+  "requestFramePermissions": [
+    "camera"
+  ],
+  "name": "Nano Banana Pet Studio"
+}
