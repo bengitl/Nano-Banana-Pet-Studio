@@ -643,23 +643,30 @@ const App = () => {
     setStyleModalStep('images');
 
     try {
-        // FIX: Use process.env.API_KEY as per the guidelines.
-        const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
         const subject = "pet";
         const searchPrompt = `A photorealistic image of a popular version of a "${subCategory}" for a ${subject}, in the style of an Amazon product photo. The item is on a plain white background.`;
 
-        const response = await ai.models.generateImages({
-            model: 'imagen-4.0-generate-001',
-            prompt: searchPrompt,
-            config: {
-              numberOfImages: 1,
-              outputMimeType: 'image/png',
-              aspectRatio: '1:1',
+        const apiResponse = await fetch('/api/generate-style-image', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
             },
+            body: JSON.stringify({ prompt: searchPrompt }),
         });
 
-        const newImages = response.generatedImages.map(img => `data:image/png;base64,${img.image.imageBytes}`);
-        if (newImages.length > 0) {
+        if (!apiResponse.ok) {
+            let errorText = `API request failed with status ${apiResponse.status}`;
+            try {
+                const errorData = await apiResponse.json();
+                errorText = errorData.error || errorText;
+            } catch(e) { /* ignore */ }
+            throw new Error(errorText);
+        }
+        
+        const result = await apiResponse.json();
+
+        if (result.images && Array.isArray(result.images) && result.images.length > 0) {
+            const newImages = result.images.map((b64: string) => `data:image/png;base64,${b64}`);
             setStyleResults(newImages);
         } else {
             setStyleError("Could not generate any style suggestions. Please try another category.");
@@ -1070,8 +1077,6 @@ const App = () => {
     setGeneratedVideo(null);
     
     try {
-      // FIX: Use process.env.API_KEY as per the guidelines.
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
       const newImages: string[] = [];
       let failedCount = 0;
       const delay = (ms: number) => new Promise(res => setTimeout(res, ms));
@@ -1128,24 +1133,33 @@ const App = () => {
           const variedPrompt = `${finalPrompt} (style variation ${i + 1})`;
           parts.push({ text: variedPrompt });
 
-          const response = await ai.models.generateContent({
-            model: 'gemini-2.5-flash-image-preview',
-            contents: { parts },
-            config: {
-              responseModalities: [Modality.IMAGE, Modality.TEXT],
+          const apiResponse = await fetch('/api/edit-image', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
             },
+            body: JSON.stringify({ parts }),
           });
-          
-          const imagePartResponse = response.candidates?.[0]?.content?.parts?.find(
-            (part: Part) => part.inlineData
-          );
 
-          if (imagePartResponse?.inlineData) {
-            const base64ImageData = imagePartResponse.inlineData.data;
-            const mimeType = imagePartResponse.inlineData.mimeType;
+          if (!apiResponse.ok) {
+              let errorText = `API request failed with status ${apiResponse.status}`;
+              try {
+                  const errorData = await apiResponse.json();
+                  errorText = errorData.error || errorText;
+              } catch (e) {
+                  // ignore if response is not json
+              }
+              throw new Error(errorText);
+          }
+          
+          const result = await apiResponse.json();
+          
+          if (result.image && result.image.data) {
+            const base64ImageData = result.image.data;
+            const mimeType = result.image.mimeType;
             newImages.push(`data:${mimeType};base64,${base64ImageData}`);
           } else {
-             console.warn(`Variation ${i + 1} did not return an image. Response:`, response.text);
+             console.warn(`Variation ${i + 1} did not return an image. Response:`, result);
              failedCount++;
           }
         } catch (err: any) {
