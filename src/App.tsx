@@ -1,3 +1,4 @@
+
 import React, { useState, useRef, useEffect } from 'react';
 import { GoogleGenAI, Modality, Part, Type } from "@google/genai";
 
@@ -142,7 +143,6 @@ const App = () => {
   const sketchCanvasRef = useRef<HTMLCanvasElement>(null);
 
 
-  // FIX: Define streamRef to hold the camera's media stream.
   const streamRef = useRef<MediaStream | null>(null);
   
   // Ref for sketch interaction state
@@ -600,7 +600,6 @@ const App = () => {
     setSelectedStyleSubCategory(null);
 
     try {
-      // FIX: Use process.env.API_KEY as per the guidelines.
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
       const subject = "pet";
       const generationPrompt = `Provide a list of four distinct, popular, and visually interesting types of ${category} for a ${subject}.
@@ -646,27 +645,19 @@ const App = () => {
         const subject = "pet";
         const searchPrompt = `A photorealistic image of a popular version of a "${subCategory}" for a ${subject}, in the style of an Amazon product photo. The item is on a plain white background.`;
 
-        const apiResponse = await fetch('/api/generate-style-image', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
+        const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+        const response = await ai.models.generateImages({
+            model: 'imagen-4.0-generate-001',
+            prompt: searchPrompt,
+            config: {
+              numberOfImages: 4,
+              outputMimeType: 'image/png',
+              aspectRatio: '1:1',
             },
-            body: JSON.stringify({ prompt: searchPrompt }),
         });
 
-        if (!apiResponse.ok) {
-            let errorText = `API request failed with status ${apiResponse.status}`;
-            try {
-                const errorData = await apiResponse.json();
-                errorText = errorData.error || errorText;
-            } catch(e) { /* ignore */ }
-            throw new Error(errorText);
-        }
-        
-        const result = await apiResponse.json();
-
-        if (result.images && Array.isArray(result.images) && result.images.length > 0) {
-            const newImages = result.images.map((b64: string) => `data:image/png;base64,${b64}`);
+        if (response.generatedImages && response.generatedImages.length > 0) {
+            const newImages = response.generatedImages.map(img => `data:image/png;base64,${img.image.imageBytes}`);
             setStyleResults(newImages);
         } else {
             setStyleError("Could not generate any style suggestions. Please try another category.");
@@ -1077,6 +1068,7 @@ const App = () => {
     setGeneratedVideo(null);
     
     try {
+      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
       const newImages: string[] = [];
       let failedCount = 0;
       const delay = (ms: number) => new Promise(res => setTimeout(res, ms));
@@ -1133,33 +1125,29 @@ const App = () => {
           const variedPrompt = `${finalPrompt} (style variation ${i + 1})`;
           parts.push({ text: variedPrompt });
 
-          const apiResponse = await fetch('/api/edit-image', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
+          const response = await ai.models.generateContent({
+            model: 'gemini-2.5-flash-image-preview',
+            contents: { parts },
+            config: {
+                responseModalities: [Modality.IMAGE, Modality.TEXT],
             },
-            body: JSON.stringify({ parts }),
           });
 
-          if (!apiResponse.ok) {
-              let errorText = `API request failed with status ${apiResponse.status}`;
-              try {
-                  const errorData = await apiResponse.json();
-                  errorText = errorData.error || errorText;
-              } catch (e) {
-                  // ignore if response is not json
+          let imageFound = false;
+          if (response.candidates && response.candidates.length > 0 && response.candidates[0].content && response.candidates[0].content.parts) {
+              for (const part of response.candidates[0].content.parts) {
+                  if (part.inlineData) {
+                      const base64ImageData = part.inlineData.data;
+                      const mimeType = part.inlineData.mimeType;
+                      newImages.push(`data:${mimeType};base64,${base64ImageData}`);
+                      imageFound = true;
+                      break; 
+                  }
               }
-              throw new Error(errorText);
           }
           
-          const result = await apiResponse.json();
-          
-          if (result.image && result.image.data) {
-            const base64ImageData = result.image.data;
-            const mimeType = result.image.mimeType;
-            newImages.push(`data:${mimeType};base64,${base64ImageData}`);
-          } else {
-             console.warn(`Variation ${i + 1} did not return an image. Response:`, result);
+          if (!imageFound) {
+             console.warn(`Variation ${i + 1} did not return an image. Response:`, response);
              failedCount++;
           }
         } catch (err: any) {
@@ -1243,7 +1231,6 @@ const App = () => {
         });
       }, 5000);
   
-      // FIX: Use process.env.API_KEY as per the guidelines.
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
       const videoPrompt = "A short, high-quality, looping video of the subject in the photo. The subject should show subtle, natural motion, such as blinking, breathing, or slight head movement. The background should remain static.";
       const inputImageData = await getInputImageForVideo();
@@ -1267,7 +1254,6 @@ const App = () => {
   
       const downloadLink = operation.response?.generatedVideos?.[0]?.video?.uri;
       if (downloadLink) {
-        // FIX: Use process.env.API_KEY as per the guidelines.
         const response = await fetch(`${downloadLink}&key=${process.env.API_KEY}`);
         if (!response.ok) {
           throw new Error(`Failed to download video: ${response.statusText}`);
