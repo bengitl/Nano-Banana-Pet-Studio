@@ -1,6 +1,8 @@
 
 import React, { useState, useRef, useEffect } from 'react';
-import { GoogleGenAI, Modality, Part, Type } from "@google/genai";
+import OpenAI from 'openai';
+import { ChatCompletionMessageParam } from 'openai/resources/chat';
+
 
 type ImageState = { B64: string; mimeType: string; file: File };
 
@@ -132,6 +134,11 @@ const App = () => {
   // State to manage conflicting accessory modes
   const [accessoryMode, setAccessoryMode] = useState<'image' | 'text4' | 'text5' | 'birthday' | null>(null);
   
+  // --- OpenAI Client Initialization ---
+  const openai = new OpenAI({
+    apiKey: process.env.API_KEY,
+    dangerouslyAllowBrowser: true, // Required for client-side usage
+  });
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -600,27 +607,25 @@ const App = () => {
     setSelectedStyleSubCategory(null);
 
     try {
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
       const subject = "pet";
       const generationPrompt = `Provide a list of four distinct, popular, and visually interesting types of ${category} for a ${subject}.
-      Your response must be a JSON array of strings. For example, for "hats", your response should look like this:
-      ["Cowboy Hat", "Top Hat", "Baseball Cap", "Beanie"]`;
+      Your response must be a valid JSON object with a single key "categories" that holds an array of strings. For example, for "hats", your response should be:
+      {"categories": ["Cowboy Hat", "Top Hat", "Baseball Cap", "Beanie"]}`;
 
-      const response = await ai.models.generateContent({
+      const response = await openai.chat.completions.create({
         model: 'gemini-2.5-flash',
-        contents: generationPrompt,
-        config: {
-            responseMimeType: "application/json",
-            responseSchema: {
-                type: Type.ARRAY,
-                items: {
-                    type: Type.STRING
-                }
-            }
-        },
+        messages: [{ role: 'user', content: generationPrompt }],
+        response_format: { type: "json_object" },
       });
 
-      const categories = JSON.parse(response.text);
+      const content = response.choices[0].message.content;
+      if (!content) {
+        throw new Error("Empty response from model.");
+      }
+
+      const result = JSON.parse(content);
+      const categories = result.categories;
+
       if (Array.isArray(categories) && categories.length > 0) {
         setStyleSubCategories(categories);
       } else {
@@ -645,19 +650,16 @@ const App = () => {
         const subject = "pet";
         const searchPrompt = `A photorealistic image of a popular version of a "${subCategory}" for a ${subject}, in the style of an Amazon product photo. The item is on a plain white background.`;
 
-        const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-        const response = await ai.models.generateImages({
+        const response = await openai.images.generate({
             model: 'imagen-4.0-generate-001',
             prompt: searchPrompt,
-            config: {
-              numberOfImages: 4,
-              outputMimeType: 'image/png',
-              aspectRatio: '1:1',
-            },
+            n: 4,
+            size: '1024x1024', // Corresponds to '1:1' aspect ratio
+            response_format: 'b64_json',
         });
 
-        if (response.generatedImages && response.generatedImages.length > 0) {
-            const newImages = response.generatedImages.map(img => `data:image/png;base64,${img.image.imageBytes}`);
+        if (response.data && response.data.length > 0) {
+            const newImages = response.data.map(img => `data:image/png;base64,${img.b64_json}`);
             setStyleResults(newImages);
         } else {
             setStyleError("Could not generate any style suggestions. Please try another category.");
@@ -1068,7 +1070,6 @@ const App = () => {
     setGeneratedVideo(null);
     
     try {
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
       const newImages: string[] = [];
       let failedCount = 0;
       const delay = (ms: number) => new Promise(res => setTimeout(res, ms));
@@ -1077,28 +1078,7 @@ const App = () => {
 
       for (let i = 0; i < numberOfVariations; i++) {
         try {
-          const parts: Part[] = [];
-
-          // Add main image
-          parts.push({
-            inlineData: { data: mainImageB64, mimeType: image.mimeType },
-          });
-
-          // Add clothing image if it exists. Placing it before the sketch may help the model.
-          if (clothingImage) {
-            parts.push({
-                inlineData: { data: clothingImage.B64, mimeType: clothingImage.mimeType },
-            });
-          }
-
-          // Add pose sketch image if it exists
-          if (poseSketch) {
-            parts.push({
-              inlineData: { data: poseSketch.split(',')[1], mimeType: 'image/png' },
-            });
-          }
-          
-          let finalPrompt = prompt;
+          let finalPrompt = `${prompt} (style variation ${i + 1})`;
           
           // Add detailed instructions if a clothing image is provided to improve realism.
           if (clothingImage) {
@@ -1107,7 +1087,6 @@ const App = () => {
           }
 
           if (poseSketch) {
-            // Replaced the old wall of text with a more direct, structured instruction.
             let poseInstruction = `\n\n**CRITICAL INSTRUCTIONS FOR POSE:**\nA line-art sketch has been provided to define the pet's final pose. You MUST use this sketch as a strict reference for the pose. Recreate the pet from the main photo in the exact pose shown in the sketch, prioritizing accuracy in limb placement and body orientation. The final image must be highly photorealistic and anatomically correct. Avoid creating any unnatural or distorted limbs.`;
             if (clothingImage) {
               poseInstruction += ` The pet should be wearing the provided clothing/accessory in this new pose.`;
@@ -1122,28 +1101,49 @@ const App = () => {
             }
           }
 
-          const variedPrompt = `${finalPrompt} (style variation ${i + 1})`;
-          parts.push({ text: variedPrompt });
+          const geminiParts: any[] = [];
+          geminiParts.push({ text: finalPrompt });
 
-          const response = await ai.models.generateContent({
-            model: 'gemini-2.5-flash-image-preview',
-            contents: { parts },
-            config: {
-                responseModalities: [Modality.IMAGE, Modality.TEXT],
+          geminiParts.push({
+            inlineData: { mimeType: image.mimeType, data: mainImageB64 },
+          });
+
+          if (clothingImage) {
+            geminiParts.push({
+              inlineData: { mimeType: clothingImage.mimeType, data: clothingImage.B64 },
+            });
+          }
+
+          if (poseSketch) {
+            const [header, base64Data] = poseSketch.split(',');
+            const mimeType = header.match(/:(.*?);/)?.[1] || 'image/png';
+            geminiParts.push({
+              inlineData: { mimeType: mimeType, data: base64Data },
+            });
+          }
+
+          const response: any = await openai.makeRequest({
+            method: 'POST',
+            path: '/v1beta/models/gemini-2.5-flash-image-preview:generateContent',
+            body: {
+              contents: [{ parts: geminiParts }],
+              config: {
+                responseModalities: ['IMAGE', 'TEXT'],
+              },
             },
           });
 
           let imageFound = false;
-          if (response.candidates && response.candidates.length > 0 && response.candidates[0].content && response.candidates[0].content.parts) {
-              for (const part of response.candidates[0].content.parts) {
-                  if (part.inlineData) {
-                      const base64ImageData = part.inlineData.data;
-                      const mimeType = part.inlineData.mimeType;
-                      newImages.push(`data:${mimeType};base64,${base64ImageData}`);
-                      imageFound = true;
-                      break; 
-                  }
+          if (response.candidates?.[0]?.content?.parts) {
+            for (const part of response.candidates[0].content.parts) {
+              if (part.inlineData) {
+                const base64ImageData = part.inlineData.data;
+                const mimeType = part.inlineData.mimeType;
+                newImages.push(`data:${mimeType};base64,${base64ImageData}`);
+                imageFound = true;
+                break;
               }
+            }
           }
           
           if (!imageFound) {
@@ -1153,14 +1153,12 @@ const App = () => {
         } catch (err: any) {
             console.error(`Error generating variation ${i + 1}:`, err);
             failedCount++;
-            // Check for rate limit error and break the loop if found
-            if (err.message && (err.message.includes('429') || err.message.includes('RESOURCE_EXHAUSTED'))) {
+            if (err.message && (err.message.includes('429') || err.message.includes('rate_limit_exceeded'))) {
                 setError("Rate limit reached. Please wait a moment or try generating fewer variations.");
-                break; // Stop trying to generate more images
+                break;
             }
         }
         
-        // Add a longer delay between requests to avoid overwhelming the backend
         if (i < numberOfVariations - 1) {
           await delay(2000);
         }
@@ -1170,10 +1168,10 @@ const App = () => {
         const oldImageCount = generatedImages.length;
         setGeneratedImages(prev => [...prev, ...newImages]);
         setCurrentImageIndex(oldImageCount);
-        if (failedCount > 0 && !error) { // Don't override the rate limit error
+        if (failedCount > 0 && !error) {
           setError(`Successfully generated ${newImages.length} of ${numberOfVariations} variations. Some requests failed.`);
         }
-      } else if (!error) { // Don't override an existing error
+      } else if (!error) {
         setError("Image generation failed. No images were returned from the model.");
       }
     } catch (err: any) {
@@ -1209,7 +1207,7 @@ const App = () => {
   };
 
   const handleGenerateVideoClick = async () => {
-    if (!image || generatedImages.length === 0) {
+    if (!image && generatedImages.length === 0) {
       setError("Please generate an image with a new look before creating a video.");
       return;
     }
@@ -1231,29 +1229,38 @@ const App = () => {
         });
       }, 5000);
   
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
       const videoPrompt = "A short, high-quality, looping video of the subject in the photo. The subject should show subtle, natural motion, such as blinking, breathing, or slight head movement. The background should remain static.";
       const inputImageData = await getInputImageForVideo();
       
-      let operation = await ai.models.generateVideos({
-        model: 'veo-2.0-generate-001',
-        prompt: videoPrompt,
-        image: {
-          imageBytes: inputImageData.b64,
-          mimeType: inputImageData.mime,
-        },
-        config: {
-          numberOfVideos: 1
-        }
+      const initialOp: any = await openai.makeRequest({
+          method: 'POST',
+          path: '/v1beta/models/veo-2.0-generate-001:generateVideos',
+          body: {
+              prompt: videoPrompt,
+              image: {
+                  imageBytes: inputImageData.b64,
+                  mimeType: inputImageData.mime,
+              },
+              config: {
+                  numberOfVideos: 1
+              }
+          }
       });
-  
+      
+      let operation = initialOp;
+
       while (!operation.done) {
         await new Promise(resolve => setTimeout(resolve, 10000));
-        operation = await ai.operations.getVideosOperation({ operation: operation });
+        operation = await openai.makeRequest({
+            method: 'GET',
+            path: `/v1beta/${operation.name}`
+        });
       }
   
       const downloadLink = operation.response?.generatedVideos?.[0]?.video?.uri;
       if (downloadLink) {
+        // The API key is usually handled by the SDK via headers, but some long-running op APIs return signed URLs or require the key in the query.
+        // We'll append it here to match the original logic.
         const response = await fetch(`${downloadLink}&key=${process.env.API_KEY}`);
         if (!response.ok) {
           throw new Error(`Failed to download video: ${response.statusText}`);
@@ -1794,7 +1801,7 @@ const App = () => {
             <button
               className="submit-btn video-btn"
               onClick={handleGenerateVideoClick}
-              disabled={generatedImages.length === 0 || loading || isVideoLoading}
+              disabled={(generatedImages.length === 0 && !image) || loading || isVideoLoading}
               aria-busy={isVideoLoading}
             >
               {isVideoLoading ? 'Filming...' : '🎬 Generate Video'}
